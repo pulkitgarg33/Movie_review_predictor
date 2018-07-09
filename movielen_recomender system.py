@@ -1,46 +1,12 @@
+
+
+
+
 import pandas as pd
 import numpy as np
 import torch
-import torchvision.datasets
 import torchvision.models
 import torchvision.transforms
-
-
-class RBM():
-
-
-    def __init__(self, num_visible, num_hidden, use_cuda=False):
-
-        self.num_visible = num_visible
-        self.num_hidden = num_hidden
-        self.k = k
-
-
-        self.weights = torch.randn(num_visible, num_hidden) * 0.1
-        self.visible_bias = torch.ones(num_visible) * 0.5
-        self.hidden_bias = torch.zeros(num_hidden)
-
-
-
-    def sample_hidden(self, visible_probabilities):
-        hidden_activations = torch.matmul(visible_probabilities, self.weights) + self.hidden_bias
-        hidden_probabilities = torch.sigmoid(hidden_activations)
-
-        return hidden_probabilities , torch.bernoulli(hidden_probabilities)
-
-
-
-    def sample_visible(self, hidden_probabilities):
-        visible_activations = torch.matmul(hidden_probabilities, self.weights.t()) + self.visible_bias
-        visible_probabilities = torch.sigmoid(visible_activations)
-        return visible_probabilities , torch.bernoulli(visible_probabilities)
-
-
-    def train(self, v0, vk, ph0, phk):
-        self.weights += torch.mm(v0.t(), ph0) - torch.mm(vk.t(), phk)
-        self.visible_bias += torch.sum((v0 - vk), 0)
-        self.hidden_bias += torch.sum((ph0 - phk), 0)
-
 
 
 
@@ -77,78 +43,102 @@ test_set = convert(test_set)
 training_set = torch.FloatTensor(training_set)
 test_set = torch.FloatTensor(test_set)
 
-# Converting the ratings into binary ratings 1 (Liked) or 0 (Not Liked)
-training_set[training_set == 0] = -1
-training_set[training_set == 1] = 0
-training_set[training_set == 2] = 0
-training_set[training_set >= 3] = 1
-test_set[test_set == 0] = -1
-test_set[test_set == 1] = 0
-test_set[test_set == 2] = 0
-test_set[test_set >= 3] = 1
+
+#making the architecture of autoencoder
+import torch.nn as nn
+class Autoencoder(nn.Module):
+    def __init__(self , ):
+        #the use of the super function is to get all the 
+        #functions of the parent class 
+        super(Autoencoder , self).__init__()
+        self.fc1 = nn.Linear(nb_movies , 20  ) # 1st encoding layer
+        self.fc2 = nn.Linear(20 , 10) # 2nd encoding layer
+        self.fc3 = nn.Linear(10 , 20) # 1st encoding layer
+        self.fc4 = nn.Linear(20 , nb_movies) # 2nd decoding layer
+        self.activation = nn.Sigmoid()
+        
+    def forward (self , x): # x is input vector
+        x = self.activation(self.fc1(x)) # returns the encoded vector
+        x = self.activation(self.fc2(x)) # returns the 2nd encoded vector
+        x = self.activation(self.fc3(x)) #returns first decoded vector
+        x = self.fc4(x)
+        return x
+    
+autoencoder = Autoencoder()
+criterion = nn.MSELoss() #criterion for the loss functiom, Mean Square Error
+from torch import optim
+optimizer = optim.RMSprop(autoencoder.parameters() , lr = 0.01 , weight_decay = 0.25)
+
+from torch.autograd import Variable
 
 
-nv = len(training_set[0])
-nh = 100
-batch_size = 100
-rbm = RBM(nv, nh)
-
-# Training the RBM
-nb_epoch = 10
-# Training the RBM
-nb_epoch = 10
+# Training the Stacked Auto encoder
+# Training the SAE
+nb_epoch = 50
 for epoch in range(1, nb_epoch + 1):
     train_loss = 0
     s = 0.
-    for id_user in range(0, nb_users - batch_size, batch_size):
-        vk = training_set[id_user:id_user+batch_size]
-        v0 = training_set[id_user:id_user+batch_size]
-        ph0,_ = rbm.sample_hidden(v0)
-        for k in range(10):
-            _,hk = rbm.sample_hidden(vk)
-            _,vk = rbm.sample_visible(hk)
-            vk[v0<0] = v0[v0<0]
-        phk,_ = rbm.sample_hidden(vk)
-        rbm.train(v0, vk, ph0, phk)
-        train_loss += torch.mean(torch.abs(v0[v0>=0] - vk[v0>=0]))
-        s += 1.
+    for id_user in range(nb_users):
+        input_vector = Variable(training_set[id_user]).unsqueeze(0)
+        target = input_vector.clone()
+        if torch.sum(target.data > 0) > 0:
+            output = autoencoder(input_vector)
+            target.require_grad = False
+            output[target == 0] = 0
+            loss = criterion(output, target)
+            mean_corrector = nb_movies/float(torch.sum(target.data > 0) + 1e-10)
+            loss.backward()
+            train_loss += np.sqrt(loss.data[0]*mean_corrector)
+            s += 1.
+            optimizer.step()
     print('epoch: '+str(epoch)+' loss: '+str(train_loss/s))
-
-       
-#testing the RBM
+        
+# Testing the SAE
 test_loss = 0
 s = 0.
-for id_user in range(0, nb_users):
-    v = training_set[id_user:id_user+1]     
-    vt = test_set[id_user:id_user+1]        #target
-    if len(vt[vt>=0]) > 0: 
-        _,h = rbm.sample_hidden(v)
-        _,v = rbm.sample_visible(h )
-        test_loss += torch.mean(torch.abs(vt[vt>=0] - v[vt>=0]))
+result = []
+
+for id_user in range(nb_users):
+    input_vector = Variable(training_set[id_user]).unsqueeze(0)
+    target = Variable(test_set[id_user]).unsqueeze(0)
+    if torch.sum(target.data > 0) > 0:
+        output = autoencoder(input_vector)
+        target.require_grad = False
+        output[target == 0] = 0
+        result.append(list(output.detach().numpy()))
+        loss = criterion(output, target)
+        mean_corrector = nb_movies/float(torch.sum(target.data > 0) + 1e-10)
+        test_loss += np.sqrt(loss.data[0]*mean_corrector)
         s += 1.
-print(' loss: '+str(test_loss/s))
+print('test loss: '+str(test_loss/s))
 
-test_features = []
-for id_user in range(0, nb_users):
-    v = training_set[id_user:id_user+1]     
-    vt = test_set[id_user:id_user+1]        #target
-    if len(vt[vt>=0]) > 0: 
-        _,h = rbm.sample_hidden(v)
-        _,v = rbm.sample_visible(h )
-        test_features.append(vt[vt>=0].numpy())
+#making the output mtrix of reviews
+s = 0.
+result = []
 
-test_features = np.array(test_features)
+for id_user in range(nb_users):
+    input_vector = Variable(training_set[id_user]).unsqueeze(0)
+    target = Variable(test_set[id_user]).unsqueeze(0)
+    output = autoencoder(input_vector)
+    target.require_grad = False
+    output[target == 0] = 0
+    result.append(list(output.detach().numpy()))
+    s += 1.
+result = np.array(result)
 
-train_features = []
-for id_user in range(0, nb_users):
-    v = training_set[id_user:id_user+1]     
-    vt = training_set[id_user:id_user+1]        #target
-    if len(vt[vt>=0]) > 0: 
-        _,h = rbm.sample_hidden(v)
-        _,v = rbm.sample_visible(h )
-        train_features.append(vt[vt>=0].numpy())
+result  = result.reshape(943, 1682)
 
-train_features = np.array(test_features)
+result = result.astype(int)
 
 
-    
+#making the predicted rating by an user for a movie
+
+print ("Enter the movie id \n")
+movieid = input()
+
+print ("Enter the user id \n")
+userid = input()
+
+
+print("the predicted ratings are :::  ")
+print(result[int(userid)  - 1][int(movieid) - 1])
